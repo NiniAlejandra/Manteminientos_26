@@ -13,16 +13,16 @@ import base64
 import csv
 import os
 
-import folium
 import pandas as pd
+import pydeck as pdk
 import streamlit as st
-from streamlit_folium import st_folium
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 MESES_ORDEN = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio"]
 
 COLOR = {"Correctivo": "#2A78D6", "Preventivo": "#EB6834", "Podas": "#1BAF7A"}
+COLOR_RGB = {"Correctivo": [42, 120, 214], "Preventivo": [235, 104, 52], "Podas": [27, 175, 122]}
 
 FUENTES = {
     "Correctivo": "bd_mantenimientos_jul.csv",
@@ -126,82 +126,66 @@ k4.metric("Podas", f"{n_poda:,}".replace(",", "."))
 tab_mapa, tab_resumen = st.tabs(["🗺️ Mapa interactivo", "📊 Resumen mensual"])
 
 with tab_mapa:
-    m = folium.Map(
-        location=[2.945, -75.275],
-        zoom_start=12,
-        tiles="CartoDB positron",
-        prefer_canvas=True,
-    )
-
-    for _, row in data_f.iterrows():
-        cat = row["Categoria"]
-        color = COLOR[cat]
-        tip_html = (
-            f"<b>{cat}</b><br>"
-            f"Incidencia: {row.get('Incidencia','—')}<br>"
-            f"Farola: {row.get('Farola','—')}<br>"
-            f"Mes: {row.get('Mes','—')}<br>"
-            f"Tipo: {row.get('Tipo','—')}<br>"
-            f"Estado: {row.get('Estado','—')}"
-        )
-        if cat == "Podas":
-            folium.RegularPolygonMarker(
-                location=[row["Latitud"], row["Longitud"]],
-                number_of_sides=3,
-                radius=6,
-                rotation=0,
-                color="#ffffff",
-                weight=1,
-                fill=True,
-                fill_color=color,
-                fill_opacity=0.9,
-                tooltip=tip_html,
-            ).add_to(m)
-        elif cat == "Preventivo":
-            folium.RegularPolygonMarker(
-                location=[row["Latitud"], row["Longitud"]],
-                number_of_sides=4,
-                radius=5,
-                rotation=45,
-                color="#ffffff",
-                weight=1,
-                fill=True,
-                fill_color=color,
-                fill_opacity=0.9,
-                tooltip=tip_html,
-            ).add_to(m)
-        else:
-            folium.CircleMarker(
-                location=[row["Latitud"], row["Longitud"]],
-                radius=3.2,
-                color="#ffffff",
-                weight=0.6,
-                fill=True,
-                fill_color=color,
-                fill_opacity=0.85,
-                tooltip=tip_html,
-            ).add_to(m)
+    layers = []
 
     if mostrar_calor:
-        from folium.plugins import HeatMap
+        layers.append(
+            pdk.Layer(
+                "HeatmapLayer",
+                data=data_f,
+                get_position=["Longitud", "Latitud"],
+                aggregation="MEAN",
+                opacity=0.55,
+            )
+        )
+    else:
+        # Una capa por variable = un color por variable, sin distinción por mes.
+        for cat in FUENTES:
+            sub = data_f[data_f["Categoria"] == cat]
+            if sub.empty:
+                continue
+            layers.append(
+                pdk.Layer(
+                    "ScatterplotLayer",
+                    data=sub,
+                    get_position=["Longitud", "Latitud"],
+                    get_fill_color=COLOR_RGB[cat] + [200],
+                    get_line_color=[255, 255, 255, 180],
+                    line_width_min_pixels=0.5,
+                    stroked=True,
+                    get_radius=25,
+                    radius_min_pixels=2.5,
+                    radius_max_pixels=7,
+                    pickable=True,
+                )
+            )
 
-        heat_pts = data_f[["Latitud", "Longitud"]].values.tolist()
-        if heat_pts:
-            HeatMap(heat_pts, radius=16, blur=20).add_to(m)
+    view_state = pdk.ViewState(latitude=2.945, longitude=-75.275, zoom=12)
+    deck = pdk.Deck(
+        layers=layers,
+        initial_view_state=view_state,
+        map_style=None,
+        tooltip={
+            "html": "<b>{Categoria}</b><br/>Incidencia: {Incidencia}<br/>"
+            "Farola: {Farola}<br/>Mes: {Mes}<br/>Estado: {Estado}",
+            "style": {"backgroundColor": "#0D2B6B", "color": "white", "fontSize": "12px"},
+        },
+    )
+    st.pydeck_chart(deck, height=560, use_container_width=True)
 
-    legend_html = f"""
-    <div style="position: fixed; bottom: 30px; right: 30px; z-index:9999;
-        background:white; padding:10px 14px; border-radius:8px;
-        box-shadow:0 2px 10px rgba(0,0,0,.15); font-size:12px; font-family:sans-serif; line-height:2">
-      <b style="display:block;margin-bottom:4px;color:#0D2B6B">Referencias</b>
-      <span><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:{COLOR['Correctivo']}"></span> Mantenimiento Correctivo</span><br>
-      <span><span style="display:inline-block;width:9px;height:9px;background:{COLOR['Preventivo']}"></span> Mantenimiento Preventivo</span><br>
-      <span><span style="display:inline-block;width:0;height:0;border-left:5px solid transparent;border-right:5px solid transparent;border-bottom:9px solid {COLOR['Podas']}"></span> Podas</span>
-    </div>
-    """
-    m.get_root().html.add_child(folium.Element(legend_html))
-
-    st_folium(m, width=None, height=560, returned_objects=[])
+    leg1, leg2, leg3, _ = st.columns([1, 1, 1, 3])
+    leg1.markdown(
+        f'<span style="color:{COLOR["Correctivo"]}">●</span> Mantenimiento Correctivo',
+        unsafe_allow_html=True,
+    )
+    leg2.markdown(
+        f'<span style="color:{COLOR["Preventivo"]}">●</span> Mantenimiento Preventivo',
+        unsafe_allow_html=True,
+    )
+    leg3.markdown(
+        f'<span style="color:{COLOR["Podas"]}">●</span> Podas',
+        unsafe_allow_html=True,
+    )
 
 with tab_resumen:
     resumen = (
@@ -213,8 +197,13 @@ with tab_resumen:
     resumen = resumen[list(FUENTES.keys())]
     resumen["Total"] = resumen.sum(axis=1)
 
+    # Prefijo numérico para forzar orden cronológico en el eje del gráfico
+    # (los gráficos de Streamlit ordenan el eje categórico alfabéticamente).
+    chart_data = resumen[list(FUENTES.keys())].copy()
+    chart_data.index = [f"{i+1:02d} {mes[:3]}" for i, mes in enumerate(MESES_ORDEN)]
+
     st.bar_chart(
-        resumen[list(FUENTES.keys())],
+        chart_data,
         color=[COLOR["Correctivo"], COLOR["Preventivo"], COLOR["Podas"]],
     )
     st.dataframe(
